@@ -2,3 +2,6 @@
 __pycache__
 Data/
 cropped_dataset/
+binary_confusion_matrix_class*
+*.pth
+Test/
