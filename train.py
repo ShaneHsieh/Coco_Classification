@@ -12,6 +12,9 @@ from PIL import Image
 from tqdm import tqdm
 import argparse
 
+import imgaug.augmenters as iaa
+from imgaug import parameters as iap
+
 class FocalLoss(nn.Module):
     def __init__(self, gamma=2.0, alpha=None, reduction='mean'):
         super(FocalLoss, self).__init__()
@@ -36,6 +39,43 @@ class FocalLoss(nn.Module):
         else:
             return focal_loss
 
+class ImgAugTransform:
+    def __init__(self, is_train=True):
+        if is_train:
+            self.aug = iaa.Sequential([
+                iaa.Resize({"longer-side": 224, "shorter-side": "keep-aspect-ratio"}),
+                iaa.Fliplr(0.5), 
+                iaa.Affine(rotate=(-25, 25)), 
+                iaa.AdditiveGaussianNoise(scale=(0, 30)),  
+                iaa.Multiply((0.6, 1.4)),
+                iaa.LinearContrast((0.5, 1.5)), 
+                iaa.PadToFixedSize(width=224, height= 224, position="center", pad_cval=0)
+            ])
+        else:
+            self.aug = iaa.Sequential([
+                iaa.Resize({"longer-side": 224, "shorter-side": "keep-aspect-ratio"}),
+                iaa.PadToFixedSize(width=224, height=224, position="center", pad_cval=0)
+            ])
+
+    def __call__(self, img):
+        img = np.array(img)
+        img = self.aug(image=img)
+        return img
+
+class CustomDataset(datasets.ImageFolder):
+    def __init__(self, root, transform=None):
+        super(CustomDataset, self).__init__(root, transform=transform)
+
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        sample = np.array(sample)
+        sample = np.transpose(sample, (2, 0, 1))  # HWC to CHW
+        sample = torch.tensor(sample, dtype=torch.float32) / 255.0
+        return sample, target
+
 class Model:
     def __init__(self, data_dir, num_classes, batch_size , num_epochs , learning_rate , device):
         self.data_dir = data_dir
@@ -51,22 +91,17 @@ class Model:
         self.model = self.model.to(device)
         
     def _setup_train(self):
-        transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
-        ])
+        train_transform = ImgAugTransform(is_train=True)
+        val_transform = ImgAugTransform(is_train=False)
 
-        train_image_folder = os.path.join(self.data_dir, 'train')
-       
+        train_image_folder = os.path.join(self.data_dir, 'train')       
         val_image_folder = os.path.join(self.data_dir, 'val')
 
-        train_dataset  = datasets.ImageFolder(root=train_image_folder, transform=transform)
-        val_dataset  = datasets.ImageFolder(root=val_image_folder, transform=transform)
+        train_dataset = CustomDataset(train_image_folder, transform=train_transform)
+        val_dataset = CustomDataset(val_image_folder, transform=val_transform)
 
         self.train_loader = DataLoader(train_dataset, batch_size=self.batch, shuffle=True)
-        self.val_loader = DataLoader(val_dataset, batch_size=self.batch)
+        self.val_loader =  DataLoader(val_dataset, batch_size=self.batch)
 
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=1e-4)
